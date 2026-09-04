@@ -1,0 +1,103 @@
+name: Deploy DEV
+
+on:
+  workflow_run:
+    workflows: [CI]
+    branches: [develop]
+    types: [completed]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sacs-attendance-development
+  cancel-in-progress: false
+
+jobs:
+  build-release:
+    if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the tested commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+      - name: Set up PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.3"
+          extensions: ctype, dom, fileinfo, mbstring, pdo_mysql, tokenizer, xml
+          tools: composer:v2
+          coverage: none
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24.20.0"
+          cache: npm
+      - name: Build immutable release
+        shell: bash
+        env:
+          RELEASE_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          [[ "$RELEASE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          composer validate --no-check-publish
+          composer install --no-dev --optimize-autoloader --no-interaction --prefer-dist --no-progress --no-scripts
+          npm ci
+          npm run build
+          printf '%s\n' "$RELEASE_SHA" > RELEASE_SHA
+          test -f artisan
+          test -f vendor/autoload.php
+          test -f public/index.php
+          test -s public/build/manifest.json
+          compgen -G 'public/build/assets/*' > /dev/null
+          mkdir -p release-artifact
+          tar -czf "release-artifact/attendance-${RELEASE_SHA}.tar.gz" --exclude=.git --exclude=.github --exclude=release-artifact --exclude=.env --exclude='.env.*' --exclude=node_modules --exclude=storage --exclude=tests .
+          tar -tzf "release-artifact/attendance-${RELEASE_SHA}.tar.gz" > release-artifact/contents.txt
+          grep -qx './RELEASE_SHA' release-artifact/contents.txt
+          grep -qx './artisan' release-artifact/contents.txt
+          grep -qx './vendor/autoload.php' release-artifact/contents.txt
+          grep -qx './public/index.php' release-artifact/contents.txt
+          grep -qx './public/build/manifest.json' release-artifact/contents.txt
+          grep -q '^./public/build/assets/' release-artifact/contents.txt
+          if grep -Eq '(^|/)\.env($|\.)|(^|/)node_modules(/|$)' release-artifact/contents.txt; then
+            echo 'Release artifact contains forbidden files.' >&2
+            exit 1
+          fi
+      - name: Store exact release artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: attendance-${{ github.event.workflow_run.head_sha }}
+          path: release-artifact/attendance-${{ github.event.workflow_run.head_sha }}.tar.gz
+          if-no-files-found: error
+          retention-days: 14
+  deploy:
+    needs: build-release
+    runs-on: ubuntu-latest
+    environment: development
+    steps:
+      - name: Download exact release artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: attendance-${{ github.event.workflow_run.head_sha }}
+          path: release-artifact
+      - name: Deploy through restricted command
+        shell: bash
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+          DEPLOY_PORT: ${{ vars.DEPLOY_PORT || '22' }}
+          RELEASE_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          [[ "$RELEASE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test -n "$DEPLOY_HOST" && test -n "$DEPLOY_USER" && test -n "$DEPLOY_SSH_KEY" && test -n "$DEPLOY_KNOWN_HOSTS"
+          test "$DEPLOY_HOST" = '187.127.206.76'
+          test "$DEPLOY_USER" = 'sacsdeploy-dev'
+          test "$DEPLOY_USER" != root
+          test -f "release-artifact/attendance-${RELEASE_SHA}.tar.gz"
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/deploy_key
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/deploy_key ~/.ssh/known_hosts
+          ssh -i ~/.ssh/deploy_key -p "$DEPLOY_PORT" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=~/.ssh/known_hosts "$DEPLOY_USER@$DEPLOY_HOST" "sacs-deploy attendance dev $RELEASE_SHA deploy" < "release-artifact/attendance-${RELEASE_SHA}.tar.gz"
