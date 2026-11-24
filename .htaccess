@@ -1,8 +1,45 @@
-Options +SymLinksIfOwnerMatch
-RewriteEngine On
+# ---------------------------------------------------------------------------
+# SACS Attendance root .htaccess for Hostinger shared hosting (LiteSpeed/Apache).
+# Unlike admin/portal/admission, this project has no public/ split: the project
+# root is the web root and the root index.php boots Laravel. This file must:
+#   1. send every request to index.php, and
+#   2. refuse project internals even if URL rewriting ever stops working.
+# Keep this file in git. Do not edit it on the server only.
+# ---------------------------------------------------------------------------
 
-# Allow Installatron requests
-RewriteCond %{REQUEST_FILENAME} deleteme\.\w+\.php
-RewriteRule (.*) - [L] 
+Options -Indexes +SymLinksIfOwnerMatch
 
-RewriteRule ^ index.php [L]
+# --- Never serve project internals (works without mod_rewrite) -------------
+<FilesMatch "(^\.|\.(env|log|sql|sqlite|bak|old|orig|swp|zip|tar|gz|7z)$|^(composer\.(json|lock)|package(-lock)?\.json|artisan|phpunit\.xml|vite\.config\.(js|ts)|tsconfig\.json|server\.php|default\.php)$)">
+    Require all denied
+</FilesMatch>
+
+<IfModule mod_alias.c>
+    RedirectMatch 404 ^/(\.git|\.github|app|bootstrap|config|database|lang|node_modules|public|resources|routes|storage|tests|vendor)(/|$)
+</IfModule>
+
+# --- Everything goes to the Laravel front controller -----------------------
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+
+    # Allow Installatron requests (Hostinger)
+    RewriteCond %{REQUEST_FILENAME} deleteme\.\w+\.php
+    RewriteRule (.*) - [L]
+
+    # Keep the Authorization header available to PHP
+    RewriteCond %{HTTP:Authorization} .
+    RewriteRule .* - [E=HTTP_AUTHORIZATION:%{HTTP:Authorization}]
+
+    RewriteRule ^ index.php [L]
+</IfModule>
+
+# --- Security headers -------------------------------------------------------
+<IfModule mod_headers.c>
+    Header always set X-Content-Type-Options "nosniff"
+    Header always set X-Frame-Options "DENY"
+    Header always set Referrer-Policy "no-referrer"
+    Header always set Content-Security-Policy "default-src 'none'; frame-ancestors 'none'"
+    Header always set Strict-Transport-Security "max-age=86400" env=HTTPS
+    Header always unset X-Powered-By
+    Header unset X-Powered-By
+</IfModule>
