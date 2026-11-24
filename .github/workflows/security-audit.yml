@@ -1,0 +1,45 @@
+name: Security audit
+
+# Reports known vulnerabilities in Composer and npm dependencies.
+# Deliberately separate from CI: Deploy DEV/PRODUCTION only wait on "CI",
+# so a red audit is visible here but never blocks a deploy.
+on:
+  pull_request:
+    branches: [develop, main]
+  push:
+    branches: [develop]
+  schedule:
+    - cron: "17 1 * * 1" # Mondays 09:17 Asia/Manila
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: security-audit-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  composer:
+    name: Composer audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.3"
+          tools: composer:v2
+          coverage: none
+      - name: Audit composer.lock
+        run: composer audit --locked --no-interaction --format=plain
+
+  npm:
+    name: npm audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24.20.0"
+      - name: Audit package-lock.json (production dependencies, high and above)
+        run: npm audit --omit=dev --audit-level=high
