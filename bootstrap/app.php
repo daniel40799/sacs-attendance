@@ -14,5 +14,9 @@ return Application::configure(basePath: dirname(__DIR__))
         //
     })
     ->withExceptions(function (Exceptions $exceptions) {
-        //
+        // Report to Sentry only when sentry/sentry-laravel is installed; it sends
+        // nothing unless SENTRY_LARAVEL_DSN is set. See config/sentry.php.
+        if (class_exists(\Sentry\Laravel\Integration::class)) {
+            \Sentry\Laravel\Integration::handles($exceptions);
+        }
     })->create();
